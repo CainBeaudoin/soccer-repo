@@ -1,10 +1,32 @@
 import 'server-only';
 import type { CompetitorRef, ScheduleMatch, ScheduleResponse, TeamStanding } from './types';
 
-const API_KEY = process.env.SPORTRADAR_SOCCER_API_KEY;
-const ACCESS_LEVEL = process.env.SPORTRADAR_ACCESS_LEVEL || 'trial';
-const LANGUAGE = process.env.SPORTRADAR_LANGUAGE || 'en';
-const BASE_URL = `https://api.sportradar.com/soccer/${ACCESS_LEVEL}/v4/${LANGUAGE}`;
+// Read env at request time, not module load. Module-level reads are
+// captured once at cold start, which makes a newly-added or changed
+// environment variable look "not configured" until the whole instance is
+// recycled — the classic symptom after adding a var in a host's dashboard.
+function config() {
+  const apiKey = process.env.SPORTRADAR_SOCCER_API_KEY?.trim();
+  const accessLevel = (process.env.SPORTRADAR_ACCESS_LEVEL || 'trial').trim();
+  const language = (process.env.SPORTRADAR_LANGUAGE || 'en').trim();
+  return {
+    apiKey,
+    accessLevel,
+    language,
+    baseUrl: `https://api.sportradar.com/soccer/${accessLevel}/v4/${language}`,
+  };
+}
+
+export function configStatus() {
+  const { apiKey, accessLevel, language, baseUrl } = config();
+  return {
+    apiKeyPresent: Boolean(apiKey),
+    apiKeyLength: apiKey?.length ?? 0,
+    accessLevel,
+    language,
+    baseUrl,
+  };
+}
 
 export class SportradarError extends Error {
   status: number;
@@ -22,9 +44,11 @@ type CacheEntry = { expires: number; value: unknown };
 const responseCache = new Map<string, CacheEntry>();
 
 async function sportradarRequest<T>(path: string, ttlMs: number): Promise<T> {
-  if (!API_KEY) {
+  const { apiKey, baseUrl } = config();
+
+  if (!apiKey) {
     throw new SportradarError(
-      'SPORTRADAR_SOCCER_API_KEY is not configured. Add it to .env.local (see .env.example).',
+      'SPORTRADAR_SOCCER_API_KEY is not set on the server. Locally: add it to .env.local. On Vercel: add it under Settings → Environment Variables with the Production scope checked, then redeploy (existing deployments do not pick up new variables).',
       500
     );
   }
@@ -35,7 +59,7 @@ async function sportradarRequest<T>(path: string, ttlMs: number): Promise<T> {
   }
 
   const separator = path.includes('?') ? '&' : '?';
-  const url = `${BASE_URL}${path}${separator}api_key=${API_KEY}`;
+  const url = `${baseUrl}${path}${separator}api_key=${apiKey}`;
 
   const res = await fetch(url, { cache: 'no-store' });
 
