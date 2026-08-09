@@ -223,3 +223,20 @@ export async function getFormStandings(seasonId: string): Promise<Map<string, st
 export function findStandingForTeam(standings: TeamStanding[], teamId: string): TeamStanding | null {
   return standings.find((s) => s.id === teamId) ?? null;
 }
+
+/**
+ * Smallest possible authenticated call, used to validate a key.
+ * Competition info always returns a payload for a valid competition, so an
+ * empty response can never be mistaken for a rejected key — unlike the
+ * daily schedule, which legitimately returns nothing on a quiet date.
+ * sr:competition:17 is the Premier League.
+ */
+export async function getCompetitionInfo(competitionId = 'sr:competition:17'): Promise<{ name: string | null }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = await sportradarRequest<any>(
+    `/competitions/${encodeURIComponent(competitionId)}/info.json`,
+    10 * 60_000
+  );
+  const name = raw?.competition?.name;
+  return { name: typeof name === 'string' ? name : null };
+}

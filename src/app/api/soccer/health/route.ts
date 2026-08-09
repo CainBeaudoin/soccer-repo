@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { configStatus, getDailySchedule, SportradarError } from '@/lib/soccer/sportradar';
+import { configStatus, getCompetitionInfo, getDailySchedule, SportradarError } from '@/lib/soccer/sportradar';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,13 +25,25 @@ export async function GET() {
     );
   }
 
-  // The key is present — make one real call to see whether Sportradar accepts it.
+  // The key is present — validate it against competition info first, which
+  // always returns a payload, then report today's schedule volume separately
+  // so an empty schedule is never mistaken for an auth failure.
   const today = new Date().toISOString().slice(0, 10);
   try {
-    const schedule = await getDailySchedule(today);
+    const competition = await getCompetitionInfo();
+    let scheduleNote: string;
+    try {
+      const schedule = await getDailySchedule(today);
+      scheduleNote = `${schedule.matches.length} match(es) listed for ${today}.`;
+    } catch (scheduleError) {
+      scheduleNote = `Key is valid, but the schedule call failed: ${
+        scheduleError instanceof Error ? scheduleError.message : 'unknown error'
+      }`;
+    }
+
     return NextResponse.json({
       ok: true,
-      detail: `Sportradar accepted the key. ${schedule.matches.length} match(es) returned for ${today}.`,
+      detail: `Sportradar accepted the key (read "${competition.name ?? 'competition'}"). ${scheduleNote}`,
       config: status,
     });
   } catch (error) {
