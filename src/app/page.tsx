@@ -4,6 +4,7 @@ import { useState, useSyncExternalStore } from 'react';
 import useSWR from 'swr';
 import Button from '@/components/ui/Button';
 import ApiKeyPanel from '@/components/ApiKeyPanel';
+import OddsBar from '@/components/OddsBar';
 import {
   clearCreds,
   credHeaders,
@@ -13,8 +14,11 @@ import {
   subscribeCreds,
   type StoredCreds,
 } from '@/lib/soccer/credential-storage';
-import type { ScheduleMatch, ScheduleResponse } from '@/lib/soccer/types';
+import type { ScheduleMatch } from '@/lib/soccer/types';
 import type { MatchOutcome, PredictionResult } from '@/lib/soccer/predict';
+import type { BoardEntry, BoardResponse } from '@/lib/soccer/board';
+
+type SortMode = 'edge' | 'time';
 
 /** SWR keys are [url, creds] so a credential change refetches automatically. */
 async function fetcher<T>([url, creds]: [string, StoredCreds | null]): Promise<T> {
@@ -67,24 +71,47 @@ function outcomeLabel(outcome: MatchOutcome, match: ScheduleMatch): string {
   return 'Draw';
 }
 
+/**
+ * How lopsided a match looks: the favourite's probability minus the next
+ * most likely outcome. A 70/20/10 match separates further than 45/40/15
+ * even though both have a clear favourite, so this ranks by margin rather
+ * than by the top number alone.
+ */
+function edgeOf(prediction: PredictionResult | null): number {
+  if (!prediction) return -1;
+  const sorted = [prediction.probabilities.home, prediction.probabilities.draw, prediction.probabilities.away].sort(
+    (a, b) => b - a
+  );
+  return sorted[0] - sorted[1];
+}
+
+function sortEntries(entries: BoardEntry[], mode: SortMode): BoardEntry[] {
+  const copy = [...entries];
+  if (mode === 'time') {
+    copy.sort((a, b) => (a.match.scheduled || '').localeCompare(b.match.scheduled || ''));
+    return copy;
+  }
+  // Unpredicted matches sink to the bottom rather than mixing into the ranking.
+  copy.sort((a, b) => edgeOf(b.prediction) - edgeOf(a.prediction));
+  return copy;
+}
+
 export default function Home() {
   const [date, setDate] = useState(todayIso());
   const [selectedMatch, setSelectedMatch] = useState<ScheduleMatch | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('edge');
   // sessionStorage is an external store: useSyncExternalStore reads it
   // without a setState-in-effect cascade and keeps the server render
   // ("not connected") consistent with the first client render.
   const creds = useSyncExternalStore(subscribeCreds, getCredsSnapshot, getCredsServerSnapshot);
 
   const {
-    data: schedule,
+    data: board,
     error: matchesErrorObj,
     isLoading: loadingMatches,
     mutate: refreshMatches,
-  } = useSWR<ScheduleResponse>(
-    creds ? ([`/api/soccer/schedule?date=${date}`, creds] as const) : null,
-    fetcher
-  );
-  const matches = schedule?.matches ?? null;
+  } = useSWR<BoardResponse>(creds ? ([`/api/soccer/board?date=${date}`, creds] as const) : null, fetcher);
+  const entries = board ? sortEntries(board.entries, sortMode) : null;
   const matchesError = matchesErrorObj instanceof Error ? matchesErrorObj.message : null;
 
   const predUrl = selectedMatch ? predictionUrl(selectedMatch) : null;
@@ -143,12 +170,36 @@ export default function Home() {
                   className="bg-[#182019] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white"
                 />
               </div>
-              <Button variant="secondary" size="sm" onClick={() => refreshMatches()} disabled={loadingMatches}>
-                Refresh
-              </Button>
+              <div className="flex items-center gap-2">
+                <div className="flex bg-[#182019] border border-white/10 rounded-lg p-0.5">
+                  <button
+                    onClick={() => setSortMode('edge')}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                      sortMode === 'edge' ? 'bg-[#3fae5f] text-black' : 'text-white/50 hover:text-white'
+                    }`}
+                  >
+                    Biggest gap
+                  </button>
+                  <button
+                    onClick={() => setSortMode('time')}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                      sortMode === 'time' ? 'bg-[#3fae5f] text-black' : 'text-white/50 hover:text-white'
+                    }`}
+                  >
+                    Kick-off
+                  </button>
+                </div>
+                <Button variant="secondary" size="sm" onClick={() => refreshMatches()} disabled={loadingMatches}>
+                  Refresh
+                </Button>
+              </div>
             </div>
 
-            {loadingMatches && <p className="text-white/40 text-sm py-8 text-center">Loading matches…</p>}
+            {loadingMatches && (
+              <p className="text-white/40 text-sm py-8 text-center">
+                Loading matches and running predictions…
+              </p>
+            )}
 
             {!loadingMatches && matchesError && (
               <div className="text-center py-8">
@@ -157,44 +208,65 @@ export default function Home() {
               </div>
             )}
 
-            {!loadingMatches && !matchesError && matches && matches.length === 0 && (
+            {!loadingMatches && !matchesError && entries && entries.length === 0 && (
               <p className="text-white/40 text-sm py-8 text-center">No matches scheduled for this date.</p>
             )}
 
-            {!loadingMatches && !matchesError && matches && matches.length > 0 && (
+            {!loadingMatches && !matchesError && entries && entries.length > 0 && (
               <div className="space-y-2">
-                {matches.map((match) => {
+                {entries.map(({ match, prediction, unavailableReason }) => {
                   const meta = statusMeta(match.status);
-                  const canPredict = Boolean(match.seasonId);
+                  const edge = edgeOf(prediction);
                   return (
                     <button
                       key={match.id}
-                      onClick={() => canPredict && setSelectedMatch(match)}
-                      disabled={!canPredict}
-                      className="w-full flex items-center justify-between gap-4 p-4 rounded-xl bg-[#0f1512] border border-white/5 hover:border-[#3fae5f]/40 transition-colors text-left disabled:cursor-not-allowed disabled:hover:border-white/5"
+                      onClick={() => prediction && setSelectedMatch(match)}
+                      disabled={!prediction}
+                      className="w-full p-4 rounded-xl bg-[#0f1512] border border-white/5 hover:border-[#3fae5f]/40 transition-colors text-left disabled:cursor-not-allowed disabled:hover:border-white/5 disabled:opacity-60"
                     >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${meta.className}`}>
-                            {meta.label}
-                          </span>
-                          <span className="text-white/30 text-xs truncate">{match.competitionName}</span>
-                          <span className="text-white/20 text-xs">·</span>
-                          <span className="text-white/30 text-xs">{formatKickoff(match.scheduled)}</span>
-                        </div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${meta.className}`}>
+                          {meta.label}
+                        </span>
+                        <span className="text-white/30 text-xs truncate">{match.competitionName}</span>
+                        <span className="text-white/30 text-xs ml-auto whitespace-nowrap">
+                          {formatKickoff(match.scheduled)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-baseline justify-between gap-3 mb-2.5">
                         <p className="text-white font-medium text-sm truncate">
                           {match.home.name}
                           {typeof match.homeScore === 'number' ? ` ${match.homeScore}` : ''} vs {match.away.name}
                           {typeof match.awayScore === 'number' ? ` ${match.awayScore}` : ''}
                         </p>
+                        {prediction && (
+                          <span className="text-[10px] text-white/30 whitespace-nowrap uppercase tracking-wide">
+                            +{edge} gap
+                          </span>
+                        )}
                       </div>
-                      <span className="text-white/30 text-sm whitespace-nowrap">
-                        {canPredict ? 'Predict →' : 'Unavailable'}
-                      </span>
+
+                      {prediction ? (
+                        <OddsBar
+                          prediction={prediction}
+                          homeName={match.home.abbreviation || match.home.name}
+                          awayName={match.away.abbreviation || match.away.name}
+                        />
+                      ) : (
+                        <p className="text-white/25 text-xs">{unavailableReason}</p>
+                      )}
                     </button>
                   );
                 })}
               </div>
+            )}
+
+            {!loadingMatches && !matchesError && board && board.seasonsSkipped > 0 && (
+              <p className="text-white/25 text-xs mt-3 text-center">
+                {board.seasonsSkipped} competition(s) not priced — standings unavailable or the per-request
+                limit was reached. Sort by kick-off to see them in schedule order.
+              </p>
             )}
           </div>
         )}
