@@ -9,11 +9,23 @@ Pick a match and get a data-driven outcome prediction — home win, draw, or awa
 3. You get a predicted outcome (home win / draw / away win), a confidence percentage, a full three-way probability breakdown, and a written thesis explaining exactly which numbers drove the call.
 4. Hit **New Prediction** to go back to the match list and pick another fixture.
 
-This is a statistical estimate for informational purposes — not betting advice, and not a guarantee. The Sportradar API key stays server-side; it's never sent to the browser.
+This is a statistical estimate for informational purposes — not betting advice, and not a guarantee.
+
+## Supplying the API key
+
+There are two ways to give the app a Sportradar key, and either works on its own.
+
+**1. Enter it in the app (no configuration).** On first load the app asks for a key and access level, validates it against Sportradar before accepting it, and keeps it in `sessionStorage` — so it lives in that browser tab only and is dropped when the tab closes. It is never written to the server, the repository, or the JavaScript bundle. Each request carries it in an `x-sportradar-key` header (a header, not a query string, so it stays out of access logs, browser history, and `Referer`). The browser never calls Sportradar directly — this app's own server does — so the key is not exposed to cross-origin requests.
+
+Use "Use a different key" to clear it and enter another.
+
+**2. Set it in the environment.** Set `SPORTRADAR_SOCCER_API_KEY` on the server and the app uses it automatically, skipping the prompt. A key entered in the UI takes precedence over the environment for that request.
+
+`GET /api/soccer/health` reports which source was used and whether Sportradar accepted the key, without ever echoing the key itself.
 
 ## Setup
 
-1. Copy `.env.example` to `.env.local` and fill in your Sportradar key:
+1. Optionally, copy `.env.example` to `.env.local` and fill in your Sportradar key — or skip this entirely and enter the key in the app when it loads:
 
    ```bash
    cp .env.example .env.local

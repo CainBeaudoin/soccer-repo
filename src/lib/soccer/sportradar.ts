@@ -5,9 +5,19 @@ import type { CompetitorRef, ScheduleMatch, ScheduleResponse, TeamStanding } fro
 // captured once at cold start, which makes a newly-added or changed
 // environment variable look "not configured" until the whole instance is
 // recycled — the classic symptom after adding a var in a host's dashboard.
-function config() {
-  const apiKey = process.env.SPORTRADAR_SOCCER_API_KEY?.trim();
-  const accessLevel = (process.env.SPORTRADAR_ACCESS_LEVEL || 'trial').trim();
+/**
+ * Per-request credentials. A caller may supply a key and access level (the
+ * "bring your own key" path, where the viewer pastes their own credentials
+ * into the UI); otherwise the server's environment is used.
+ */
+export interface SportradarCreds {
+  apiKey?: string;
+  accessLevel?: string;
+}
+
+function config(creds?: SportradarCreds) {
+  const apiKey = (creds?.apiKey ?? process.env.SPORTRADAR_SOCCER_API_KEY)?.trim();
+  const accessLevel = (creds?.accessLevel || process.env.SPORTRADAR_ACCESS_LEVEL || 'trial').trim();
   const language = (process.env.SPORTRADAR_LANGUAGE || 'en').trim();
   return {
     apiKey,
@@ -17,11 +27,12 @@ function config() {
   };
 }
 
-export function configStatus() {
-  const { apiKey, accessLevel, language, baseUrl } = config();
+export function configStatus(creds?: SportradarCreds) {
+  const { apiKey, accessLevel, language, baseUrl } = config(creds);
   return {
     apiKeyPresent: Boolean(apiKey),
     apiKeyLength: apiKey?.length ?? 0,
+    keySource: creds?.apiKey ? ('request' as const) : apiKey ? ('environment' as const) : ('none' as const),
     accessLevel,
     language,
     baseUrl,
@@ -43,23 +54,34 @@ export class SportradarError extends Error {
 type CacheEntry = { expires: number; value: unknown };
 const responseCache = new Map<string, CacheEntry>();
 
-async function sportradarRequest<T>(path: string, ttlMs: number): Promise<T> {
-  const { apiKey, baseUrl } = config();
+/** Distinguishes cache entries per credential without storing the key itself. */
+function credFingerprint(apiKey: string, accessLevel: string): string {
+  let h = 0;
+  const s = `${accessLevel}:${apiKey}`;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
+async function sportradarRequest<T>(path: string, ttlMs: number, creds?: SportradarCreds): Promise<T> {
+  const { apiKey, accessLevel, baseUrl } = config(creds);
 
   if (!apiKey) {
     throw new SportradarError(
-      'SPORTRADAR_SOCCER_API_KEY is not set on the server. Locally: add it to .env.local. On Vercel: add it under Settings → Environment Variables with the Production scope checked, then redeploy (existing deployments do not pick up new variables).',
+      'No Sportradar API key available. Enter one in the app, or set SPORTRADAR_SOCCER_API_KEY on the server (on Vercel: Settings → Environment Variables with the Production scope checked, then redeploy).',
       500
     );
   }
 
-  const cached = responseCache.get(path);
+  const cacheKey = `${credFingerprint(apiKey, accessLevel)}|${path}`;
+  const cached = responseCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return cached.value as T;
   }
 
   const separator = path.includes('?') ? '&' : '?';
-  const url = `${baseUrl}${path}${separator}api_key=${apiKey}`;
+  const url = `${baseUrl}${path}${separator}api_key=${encodeURIComponent(apiKey)}`;
 
   const res = await fetch(url, { cache: 'no-store' });
 
@@ -72,7 +94,7 @@ async function sportradarRequest<T>(path: string, ttlMs: number): Promise<T> {
     }
     if (res.status === 401 || res.status === 403) {
       throw new SportradarError(
-        'Sportradar rejected the request. Check SPORTRADAR_SOCCER_API_KEY and SPORTRADAR_ACCESS_LEVEL (trial vs production) in .env.local.',
+        `Sportradar rejected the key for access level "${accessLevel}". If this is a production key, switch the access level to "production" (or to "trial" if it is a trial key).`,
         res.status
       );
     }
@@ -83,7 +105,7 @@ async function sportradarRequest<T>(path: string, ttlMs: number): Promise<T> {
   }
 
   const data = (await res.json()) as T;
-  responseCache.set(path, { expires: Date.now() + ttlMs, value: data });
+  responseCache.set(cacheKey, { expires: Date.now() + ttlMs, value: data });
   return data;
 }
 
@@ -129,9 +151,9 @@ function normalizeMatch(raw: any): ScheduleMatch | null {
   };
 }
 
-export async function getDailySchedule(date: string): Promise<ScheduleResponse> {
+export async function getDailySchedule(date: string, creds?: SportradarCreds): Promise<ScheduleResponse> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = await sportradarRequest<any>(`/schedules/${date}/schedules.json`, 60_000);
+  const raw = await sportradarRequest<any>(`/schedules/${date}/schedules.json`, 60_000, creds);
   const rawMatches = Array.isArray(raw?.schedules) ? raw.schedules : [];
 
   const matches = rawMatches
@@ -182,9 +204,13 @@ function collectStandingRows(raw: any): unknown[] {
   return rows;
 }
 
-export async function getStandings(seasonId: string): Promise<TeamStanding[]> {
+export async function getStandings(seasonId: string, creds?: SportradarCreds): Promise<TeamStanding[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = await sportradarRequest<any>(`/seasons/${encodeURIComponent(seasonId)}/standings.json`, 5 * 60_000);
+  const raw = await sportradarRequest<any>(
+    `/seasons/${encodeURIComponent(seasonId)}/standings.json`,
+    5 * 60_000,
+    creds
+  );
   const rows = collectStandingRows(raw);
 
   const teams: TeamStanding[] = [];
@@ -195,13 +221,17 @@ export async function getStandings(seasonId: string): Promise<TeamStanding[]> {
   return teams;
 }
 
-export async function getFormStandings(seasonId: string): Promise<Map<string, string>> {
+export async function getFormStandings(
+  seasonId: string,
+  creds?: SportradarCreds
+): Promise<Map<string, string>> {
   const form = new Map<string, string>();
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const raw = await sportradarRequest<any>(
       `/seasons/${encodeURIComponent(seasonId)}/form_standings.json`,
-      5 * 60_000
+      5 * 60_000,
+      creds
     );
     const rows = collectStandingRows(raw);
     for (const row of rows) {
@@ -231,11 +261,15 @@ export function findStandingForTeam(standings: TeamStanding[], teamId: string): 
  * daily schedule, which legitimately returns nothing on a quiet date.
  * sr:competition:17 is the Premier League.
  */
-export async function getCompetitionInfo(competitionId = 'sr:competition:17'): Promise<{ name: string | null }> {
+export async function getCompetitionInfo(
+  competitionId = 'sr:competition:17',
+  creds?: SportradarCreds
+): Promise<{ name: string | null }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = await sportradarRequest<any>(
     `/competitions/${encodeURIComponent(competitionId)}/info.json`,
-    10 * 60_000
+    10 * 60_000,
+    creds
   );
   const name = raw?.competition?.name;
   return { name: typeof name === 'string' ? name : null };

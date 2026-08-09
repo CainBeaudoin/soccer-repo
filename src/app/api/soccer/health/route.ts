@@ -1,16 +1,19 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { configStatus, getCompetitionInfo, getDailySchedule, SportradarError } from '@/lib/soccer/sportradar';
+import { credsFromRequest } from '@/lib/soccer/request-creds';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Diagnostic endpoint: reports whether the API key reached the server and
- * what Sportradar actually said back, so a misconfiguration can be told
- * apart from a bad key or a wrong access level without reading logs.
- * Never returns the key itself — only whether one is present and its length.
+ * Diagnostic endpoint: reports whether a key was available and what
+ * Sportradar answered, separating a missing key from a rejected one, a
+ * wrong access level, and rate limiting. Accepts a caller-supplied key so
+ * it can validate one before the app stores it. Never returns the key —
+ * only whether one is present, its length, and where it came from.
  */
-export async function GET() {
-  const status = configStatus();
+export async function GET(request: NextRequest) {
+  const creds = credsFromRequest(request);
+  const status = configStatus(creds);
 
   if (!status.apiKeyPresent) {
     return NextResponse.json(
@@ -18,22 +21,19 @@ export async function GET() {
         ok: false,
         problem: 'missing_api_key',
         detail:
-          'SPORTRADAR_SOCCER_API_KEY is not visible to the server. On Vercel: Settings → Environment Variables → add it with the Production scope checked, then redeploy (existing deployments do not pick up newly added variables).',
+          'No API key was supplied with the request and none is set on the server. Enter a key in the app, or set SPORTRADAR_SOCCER_API_KEY in the deployment environment and redeploy.',
         config: status,
       },
-      { status: 500 }
+      { status: 400 }
     );
   }
 
-  // The key is present — validate it against competition info first, which
-  // always returns a payload, then report today's schedule volume separately
-  // so an empty schedule is never mistaken for an auth failure.
-  const today = new Date().toISOString().slice(0, 10);
   try {
-    const competition = await getCompetitionInfo();
+    const competition = await getCompetitionInfo(undefined, creds);
     let scheduleNote: string;
     try {
-      const schedule = await getDailySchedule(today);
+      const today = new Date().toISOString().slice(0, 10);
+      const schedule = await getDailySchedule(today, creds);
       scheduleNote = `${schedule.matches.length} match(es) listed for ${today}.`;
     } catch (scheduleError) {
       scheduleNote = `Key is valid, but the schedule call failed: ${
@@ -47,8 +47,7 @@ export async function GET() {
       config: status,
     });
   } catch (error) {
-    const isSr = error instanceof SportradarError;
-    const httpStatus = isSr ? error.status : 502;
+    const httpStatus = error instanceof SportradarError ? error.status : 502;
     let problem = 'request_failed';
     if (httpStatus === 401 || httpStatus === 403) problem = 'key_rejected';
     else if (httpStatus === 429) problem = 'rate_limited';
@@ -57,12 +56,7 @@ export async function GET() {
       {
         ok: false,
         problem,
-        detail:
-          problem === 'key_rejected'
-            ? `Sportradar rejected the key for access level "${status.accessLevel}". If your key is a production key, set SPORTRADAR_ACCESS_LEVEL=production (or vice versa) and redeploy.`
-            : error instanceof Error
-              ? error.message
-              : 'Unknown error.',
+        detail: error instanceof Error ? error.message : 'Unknown error.',
         config: status,
       },
       { status: httpStatus }

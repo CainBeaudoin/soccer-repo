@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDailySchedule, SportradarError } from '@/lib/soccer/sportradar';
+import { credsFromRequest } from '@/lib/soccer/request-creds';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -12,7 +13,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const schedule = await getDailySchedule(date);
+    const schedule = await getDailySchedule(date, credsFromRequest(request));
     return NextResponse.json(schedule);
   } catch (error) {
     const status = error instanceof SportradarError ? error.status : 502;

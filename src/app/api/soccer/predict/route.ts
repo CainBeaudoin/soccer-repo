@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { findStandingForTeam, getFormStandings, getStandings, SportradarError } from '@/lib/soccer/sportradar';
 import { predictMatch } from '@/lib/soccer/predict';
+import { credsFromRequest } from '@/lib/soccer/request-creds';
 import type { CompetitorRef } from '@/lib/soccer/types';
 
 export async function GET(request: NextRequest) {
@@ -22,7 +23,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [standings, form] = await Promise.all([getStandings(seasonId), getFormStandings(seasonId)]);
+    const creds = credsFromRequest(request);
+    const [standings, form] = await Promise.all([
+      getStandings(seasonId, creds),
+      getFormStandings(seasonId, creds),
+    ]);
     const homeStanding = findStandingForTeam(standings, homeId);
     const awayStanding = findStandingForTeam(standings, awayId);
     if (homeStanding && form.has(homeId)) homeStanding.form = form.get(homeId);

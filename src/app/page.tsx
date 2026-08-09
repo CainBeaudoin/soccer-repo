@@ -1,13 +1,24 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import useSWR from 'swr';
 import Button from '@/components/ui/Button';
+import ApiKeyPanel from '@/components/ApiKeyPanel';
+import {
+  clearCreds,
+  credHeaders,
+  getCredsServerSnapshot,
+  getCredsSnapshot,
+  saveCreds,
+  subscribeCreds,
+  type StoredCreds,
+} from '@/lib/soccer/credential-storage';
 import type { ScheduleMatch, ScheduleResponse } from '@/lib/soccer/types';
 import type { MatchOutcome, PredictionResult } from '@/lib/soccer/predict';
 
-async function fetcher<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+/** SWR keys are [url, creds] so a credential change refetches automatically. */
+async function fetcher<T>([url, creds]: [string, StoredCreds | null]): Promise<T> {
+  const res = await fetch(url, { headers: credHeaders(creds) });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
   return body as T;
@@ -38,7 +49,7 @@ function formatKickoff(iso: string): string {
   return d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
-function predictionKey(match: ScheduleMatch): string | null {
+function predictionUrl(match: ScheduleMatch): string | null {
   if (!match.seasonId) return null;
   const params = new URLSearchParams({
     homeId: match.home.id,
@@ -59,24 +70,36 @@ function outcomeLabel(outcome: MatchOutcome, match: ScheduleMatch): string {
 export default function Home() {
   const [date, setDate] = useState(todayIso());
   const [selectedMatch, setSelectedMatch] = useState<ScheduleMatch | null>(null);
+  // sessionStorage is an external store: useSyncExternalStore reads it
+  // without a setState-in-effect cascade and keeps the server render
+  // ("not connected") consistent with the first client render.
+  const creds = useSyncExternalStore(subscribeCreds, getCredsSnapshot, getCredsServerSnapshot);
 
   const {
     data: schedule,
     error: matchesErrorObj,
     isLoading: loadingMatches,
     mutate: refreshMatches,
-  } = useSWR<ScheduleResponse>(`/api/soccer/schedule?date=${date}`, fetcher);
+  } = useSWR<ScheduleResponse>(
+    creds ? ([`/api/soccer/schedule?date=${date}`, creds] as const) : null,
+    fetcher
+  );
   const matches = schedule?.matches ?? null;
   const matchesError = matchesErrorObj instanceof Error ? matchesErrorObj.message : null;
 
-  const key = selectedMatch ? predictionKey(selectedMatch) : null;
+  const predUrl = selectedMatch ? predictionUrl(selectedMatch) : null;
   const {
     data: prediction,
     error: predictionErrorObj,
     isLoading: loadingPrediction,
     mutate: retryPrediction,
-  } = useSWR<PredictionResult>(key, fetcher);
+  } = useSWR<PredictionResult>(predUrl && creds ? ([predUrl, creds] as const) : null, fetcher);
   const predictionError = predictionErrorObj instanceof Error ? predictionErrorObj.message : null;
+
+  function handleDisconnect() {
+    clearCreds();
+    setSelectedMatch(null);
+  }
 
   return (
     <div className="min-h-screen px-6 py-10">
@@ -89,7 +112,23 @@ export default function Home() {
           <p className="text-white/30 text-xs mt-1">Informational only — not betting advice.</p>
         </header>
 
-        {!selectedMatch && (
+        {!creds && <ApiKeyPanel onSaved={(apiKey, accessLevel) => saveCreds({ apiKey, accessLevel })} />}
+
+        {creds && (
+          <div className="flex items-center justify-between gap-3 mb-4 text-xs">
+            <span className="text-[#3fae5f]">
+              ● Connected · {creds.accessLevel}
+            </span>
+            <button
+              onClick={handleDisconnect}
+              className="text-white/40 hover:text-white underline underline-offset-2"
+            >
+              Use a different key
+            </button>
+          </div>
+        )}
+
+        {creds && !selectedMatch && (
           <div className="bg-[#121a15] border border-white/10 rounded-2xl p-5">
             <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
               <div className="flex items-center gap-2">
@@ -160,7 +199,7 @@ export default function Home() {
           </div>
         )}
 
-        {selectedMatch && (
+        {creds && selectedMatch && (
           <div className="bg-[#121a15] border border-white/10 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
