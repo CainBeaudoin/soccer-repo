@@ -6,6 +6,7 @@ import Button from '@/components/ui/Button';
 import ApiKeyPanel from '@/components/ApiKeyPanel';
 import OddsBar from '@/components/OddsBar';
 import LeagueFilter from '@/components/LeagueFilter';
+import MatchSearch from '@/components/MatchSearch';
 import {
   clearCreds,
   credHeaders,
@@ -178,6 +179,8 @@ export default function Home() {
             </button>
           </div>
         )}
+
+        {creds && !selectedMatch && <MatchSearch creds={creds} date={date} />}
 
         {creds && !selectedMatch && (
           <div className="bg-[#121a15] border border-white/10 rounded-2xl p-5">

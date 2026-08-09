@@ -53,6 +53,18 @@ Use "Use a different key" to clear it and enter another.
 - Sportradar addresses league tables by an opaque `season_id`, unlike a simple year — this app reads `season_id` straight off each match in the daily schedule response and carries it through to the prediction request, so no separate season lookup is needed. If Sportradar's coverage tier for a given competition omits season context, that match is shown but marked "Unavailable" for prediction rather than erroring.
 - Recent form (`/seasons/{season_id}/form_standings.json`) is treated as a nice-to-have: if the feed doesn't return it for a competition, predictions still work from league table + goal difference alone.
 
+## Odds Comparison
+
+A search bar above the board queries the [Odds Comparison Regular API](https://developer.sportradar.com/) across sports — not just soccer — matching on team, competitor, or competition name. Expanding a result shows consensus pricing from the bookmaker panel.
+
+Prices are shown as decimal odds alongside the probability they imply. That implied figure has the bookmaker margin removed first: raw prices deliberately sum to more than 100% (the excess is the margin, shown per market), so they are normalised back to 100% before being displayed. Only then is the market comparable to this app's model probabilities. The de-vig uses the simple proportional method, which assumes margin is spread evenly across outcomes — standard for a quick comparison, though it does slightly understate favourites, since books in practice load more margin onto longshots.
+
+Because the odds feed is organised per sport per day, a search fans out across sports sequentially with a cap, to stay inside the trial rate limit. A sport your key doesn't cover is skipped rather than failing the search, and the result count reports how many sports were actually reached.
+
+`GET /api/odds/health` verifies the key reaches the Odds Comparison product and lists the sports it can see.
+
+> **Verification status:** the soccer feeds' request/response handling has been exercised directly. The Odds Comparison endpoint paths follow Sportradar's documented v2 conventions but have **not** been run against the live API from this codebase — they are collected in one block at the top of `src/lib/odds/client.ts`, and the URL segment is overridable via `SPORTRADAR_ODDS_BASE`. If a call 404s, that block is the first thing to check; `/api/odds/health` reports which part failed.
+
 ## Project structure
 
 - `src/lib/soccer/sportradar.ts` — server-only Sportradar client + response normalization.
