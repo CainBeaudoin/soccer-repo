@@ -63,7 +63,20 @@ Because the odds feed is organised per sport per day, a search fans out across s
 
 `GET /api/odds/health` verifies the key reaches the Odds Comparison product and lists the sports it can see.
 
-> **Verification status:** the soccer feeds' request/response handling has been exercised directly. The Odds Comparison endpoint paths follow Sportradar's documented v2 conventions but have **not** been run against the live API from this codebase — they are collected in one block at the top of `src/lib/odds/client.ts`, and the URL segment is overridable via `SPORTRADAR_ODDS_BASE`. If a call 404s, that block is the first thing to check; `/api/odds/health` reports which part failed.
+### Diagnosing a 403
+
+Sportradar answers **both** a missing entitlement **and** a wrong URL path with `403`, so a single failed call cannot tell you which one you have. Rather than guessing and redeploying, `/api/odds/health` probes the plausible combinations of base segment, version, and access level, and reports which one the key actually opens:
+
+```
+GET /api/odds/health          # probes automatically when the configured line fails
+GET /api/odds/health?probe=1  # probe even when the configured line works
+```
+
+If a combination works, the response names the exact environment variables to set. If none works, the key lacks the Odds Comparison entitlement — that is enabled per product on the Sportradar account and cannot be fixed in this app.
+
+Note that the Odds Comparison family is documented under **v1** (`/odds/v1/` on the developer portal), a different version line from the **v4** soccer feeds — hence `SPORTRADAR_ODDS_VERSION` defaulting to `v1`.
+
+> **Verification status:** the soccer feeds' request/response handling has been exercised directly. The Odds Comparison endpoint paths follow Sportradar's documented conventions but have **not** been run against the live API from this codebase — they are collected in one block at the top of `src/lib/odds/client.ts`, and both the base segment and version are overridable. The probe above exists precisely because those paths are unverified.
 
 ## Project structure
 

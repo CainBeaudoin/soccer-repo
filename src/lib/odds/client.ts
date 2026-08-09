@@ -11,16 +11,18 @@ import type {
 } from './types';
 
 /**
- * Odds Comparison Regular API (v2).
+ * Odds Comparison Regular API.
  *
- * NOTE ON PATHS: these follow Sportradar's documented v2 conventions, but
- * unlike the soccer feeds they have not been exercised against the live API
- * from this codebase. If a call 404s, the path below is the thing to check
- * first — they are deliberately collected here rather than scattered, and
- * the base segment is overridable via SPORTRADAR_ODDS_BASE for exactly that
- * reason. /api/odds/health reports what each one returned.
+ * The Odds Comparison family is documented under v1 (see the developer
+ * portal's /odds/v1/ reference), which is a different version line from the
+ * v4 soccer feeds. Sportradar answers a path outside an account's
+ * entitlement with 403 rather than 404, so a wrong version reads as
+ * "key rejected" instead of "not found" — hence the version, like the base
+ * segment, is overridable without a code change.
  */
 const PATHS = {
+  // Bookmaker panel. Lightest authenticated call, so it doubles as the probe.
+  books: () => `/books.json`,
   sports: () => `/sports.json`,
   // Schedule of events for one sport on one day.
   sportSchedule: (sportId: string, date: string) =>
@@ -39,16 +41,18 @@ function config(creds?: SportradarCreds) {
   const accessLevel = (creds?.accessLevel || process.env.SPORTRADAR_ACCESS_LEVEL || 'trial').trim();
   const language = (process.env.SPORTRADAR_LANGUAGE || 'en').trim();
   const base = (process.env.SPORTRADAR_ODDS_BASE || 'oddscomparison-rg').trim();
+  const version = (process.env.SPORTRADAR_ODDS_VERSION || 'v1').trim();
   return {
     apiKey,
     accessLevel,
-    baseUrl: `https://api.sportradar.com/${base}/${accessLevel}/v2/${language}`,
+    version,
+    baseUrl: `https://api.sportradar.com/${base}/${accessLevel}/${version}/${language}`,
   };
 }
 
 export function oddsConfigStatus(creds?: SportradarCreds) {
-  const { apiKey, accessLevel, baseUrl } = config(creds);
-  return { apiKeyPresent: Boolean(apiKey), accessLevel, baseUrl };
+  const { apiKey, accessLevel, version, baseUrl } = config(creds);
+  return { apiKeyPresent: Boolean(apiKey), accessLevel, version, baseUrl };
 }
 
 type CacheEntry = { expires: number; value: unknown };
@@ -62,7 +66,8 @@ function fingerprint(apiKey: string, accessLevel: string): string {
 }
 
 async function oddsRequest<T>(path: string, ttlMs: number, creds?: SportradarCreds): Promise<T> {
-  const { apiKey, accessLevel, baseUrl } = config(creds);
+  const { apiKey, accessLevel, version, baseUrl } = config(creds);
+  const base = (process.env.SPORTRADAR_ODDS_BASE || 'oddscomparison-rg').trim();
   if (!apiKey) {
     throw new SportradarError(
       'No Sportradar API key available for the Odds Comparison API. Enter one in the app or set SPORTRADAR_ODDS_API_KEY.',
@@ -84,14 +89,19 @@ async function oddsRequest<T>(path: string, ttlMs: number, creds?: SportradarCre
       throw new SportradarError('Odds API rate limit exceeded. Try again in a moment.', 429);
     }
     if (res.status === 401 || res.status === 403) {
+      // Sportradar answers an out-of-entitlement path with 403, so this is
+      // not necessarily a bad key — the URL shape is just as likely.
       throw new SportradarError(
-        `The Odds Comparison API rejected the key for access level "${accessLevel}". A key valid for the soccer feeds still needs the Odds Comparison product enabled.`,
+        `Odds Comparison returned ${res.status} for ${baseUrl}${path}. Three things produce this: ` +
+          `(1) the Odds Comparison product is not enabled on the key — it is a separate entitlement from the soccer feeds; ` +
+          `(2) the access level is wrong — currently "${accessLevel}", try the other; ` +
+          `(3) the URL line is wrong — currently base "${base}" version "${version}", override with SPORTRADAR_ODDS_BASE / SPORTRADAR_ODDS_VERSION.`,
         res.status
       );
     }
     if (res.status === 404) {
       throw new SportradarError(
-        `Odds endpoint not found (${path}). The Odds Comparison path or base segment may differ for your account — see SPORTRADAR_ODDS_BASE.`,
+        `Odds endpoint not found: ${baseUrl}${path}. Check SPORTRADAR_ODDS_BASE (currently "${base}") and SPORTRADAR_ODDS_VERSION (currently "${version}").`,
         404
       );
     }
@@ -111,6 +121,17 @@ async function oddsRequest<T>(path: string, ttlMs: number, creds?: SportradarCre
 function normalizeSport(raw: any): OddsSport | null {
   if (!raw?.id) return null;
   return { id: String(raw.id), name: typeof raw.name === 'string' ? raw.name : String(raw.id) };
+}
+
+/** Bookmaker panel — the lightest authenticated call, used to probe access. */
+export async function getBooks(creds?: SportradarCreds): Promise<{ id: string; name: string }[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = await oddsRequest<any>(PATHS.books(), 60 * 60_000, creds);
+  const list = Array.isArray(raw?.books) ? raw.books : [];
+  return list
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .map((b: any) => (b?.id ? { id: String(b.id), name: String(b.name ?? b.id) } : null))
+    .filter((b: { id: string; name: string } | null): b is { id: string; name: string } => b !== null);
 }
 
 export async function getSports(creds?: SportradarCreds): Promise<OddsSport[]> {
@@ -249,6 +270,85 @@ export async function getMatchOdds(
   }
 
   return { sportEventId, markets };
+}
+
+export interface VariantProbe {
+  base: string;
+  version: string;
+  accessLevel: string;
+  url: string;
+  status: number | 'error';
+  ok: boolean;
+  note?: string;
+}
+
+/**
+ * Tries the plausible Odds Comparison URL lines and reports which one the
+ * key actually opens. Sportradar answers both a bad entitlement and a wrong
+ * path with 403, so the product/base/version cannot be told apart from a
+ * single failed call — probing turns that ambiguity into a definite answer
+ * without redeploying to test each guess by hand.
+ *
+ * Runs sequentially with a pause: it is a diagnostic, and tripping the rate
+ * limit mid-probe would produce exactly the ambiguity it exists to remove.
+ */
+export async function probeVariants(creds?: SportradarCreds): Promise<VariantProbe[]> {
+  const { apiKey } = config(creds);
+  if (!apiKey) throw new SportradarError('No API key supplied.', 400);
+
+  const language = (process.env.SPORTRADAR_LANGUAGE || 'en').trim();
+  const bases = ['oddscomparison-rg', 'oddscomparison'];
+  const versions = ['v1', 'v2'];
+  const levels = [
+    (creds?.accessLevel || process.env.SPORTRADAR_ACCESS_LEVEL || 'trial').trim(),
+    creds?.accessLevel === 'production' ? 'trial' : 'production',
+  ];
+
+  const results: VariantProbe[] = [];
+  let first = true;
+
+  for (const accessLevel of [...new Set(levels)]) {
+    for (const base of bases) {
+      for (const version of versions) {
+        if (!first) await new Promise((r) => setTimeout(r, 1100));
+        first = false;
+
+        const url = `https://api.sportradar.com/${base}/${accessLevel}/${version}/${language}/books.json`;
+        try {
+          const res = await fetch(`${url}?api_key=${encodeURIComponent(apiKey)}`, { cache: 'no-store' });
+          results.push({
+            base,
+            version,
+            accessLevel,
+            url,
+            status: res.status,
+            ok: res.ok,
+            note: res.ok
+              ? 'Works — set SPORTRADAR_ODDS_BASE / SPORTRADAR_ODDS_VERSION to these values.'
+              : res.status === 403
+                ? 'Rejected: product not entitled, or this URL line is wrong.'
+                : res.status === 404
+                  ? 'No such path on this account.'
+                  : undefined,
+          });
+          // A working line makes the remaining combinations moot.
+          if (res.ok) return results;
+        } catch (error) {
+          results.push({
+            base,
+            version,
+            accessLevel,
+            url,
+            status: 'error',
+            ok: false,
+            note: error instanceof Error ? error.message : 'Request failed.',
+          });
+        }
+      }
+    }
+  }
+
+  return results;
 }
 
 /**
