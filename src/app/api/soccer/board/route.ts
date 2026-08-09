@@ -16,8 +16,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid date. Use YYYY-MM-DD.' }, { status: 400 });
   }
 
+  const preferred = (searchParams.get('competitions') ?? '')
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean);
+
   try {
-    const board = await getBoard(date, credsFromRequest(request));
+    const board = await getBoard(date, credsFromRequest(request), preferred);
     return NextResponse.json(board);
   } catch (error) {
     const status = error instanceof SportradarError ? error.status : 502;

@@ -19,6 +19,8 @@ export interface BoardEntry {
 export interface BoardResponse {
   date: string;
   entries: BoardEntry[];
+  /** Every competition on the schedule, for building the filter. */
+  competitions: string[];
   seasonsResolved: number;
   seasonsSkipped: number;
 }
@@ -37,11 +39,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function getBoard(date: string, creds?: SportradarCreds): Promise<BoardResponse> {
+export async function getBoard(
+  date: string,
+  creds?: SportradarCreds,
+  /** Competition names to price first, so a filtered view is never starved by the cap. */
+  preferredCompetitions?: string[]
+): Promise<BoardResponse> {
   const schedule = await getDailySchedule(date, creds);
 
-  // Order seasons by how many matches each covers, so a capped run resolves
-  // the busiest competitions first.
   const bySeason = new Map<string, ScheduleMatch[]>();
   for (const match of schedule.matches) {
     if (!match.seasonId) continue;
@@ -49,9 +54,19 @@ export async function getBoard(date: string, creds?: SportradarCreds): Promise<B
     if (list) list.push(match);
     else bySeason.set(match.seasonId, [match]);
   }
-  const seasonIds = [...bySeason.keys()].sort(
-    (a, b) => (bySeason.get(b)?.length ?? 0) - (bySeason.get(a)?.length ?? 0)
-  );
+
+  const preferred = new Set((preferredCompetitions ?? []).map((c) => c.toLowerCase()));
+  const isPreferred = (seasonId: string) =>
+    preferred.size > 0 &&
+    (bySeason.get(seasonId) ?? []).some((m) => preferred.has(m.competitionName.toLowerCase()));
+
+  // Requested competitions first, then the busiest ones, so a capped run
+  // always prices what the viewer is actually looking at.
+  const seasonIds = [...bySeason.keys()].sort((a, b) => {
+    const prefDelta = Number(isPreferred(b)) - Number(isPreferred(a));
+    if (prefDelta !== 0) return prefDelta;
+    return (bySeason.get(b)?.length ?? 0) - (bySeason.get(a)?.length ?? 0);
+  });
 
   const predictions = new Map<string, PredictionResult>();
   let seasonsResolved = 0;
@@ -107,5 +122,9 @@ export async function getBoard(date: string, creds?: SportradarCreds): Promise<B
     };
   });
 
-  return { date: schedule.date, entries, seasonsResolved, seasonsSkipped };
+  const competitions = [...new Set(schedule.matches.map((m) => m.competitionName))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+  return { date: schedule.date, entries, competitions, seasonsResolved, seasonsSkipped };
 }

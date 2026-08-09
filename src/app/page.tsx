@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import Button from '@/components/ui/Button';
 import ApiKeyPanel from '@/components/ApiKeyPanel';
 import OddsBar from '@/components/OddsBar';
+import LeagueFilter from '@/components/LeagueFilter';
 import {
   clearCreds,
   credHeaders,
@@ -100,6 +101,7 @@ export default function Home() {
   const [date, setDate] = useState(todayIso());
   const [selectedMatch, setSelectedMatch] = useState<ScheduleMatch | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('edge');
+  const [leagues, setLeagues] = useState<string[]>([]);
   // sessionStorage is an external store: useSyncExternalStore reads it
   // without a setState-in-effect cascade and keeps the server render
   // ("not connected") consistent with the first client render.
@@ -110,9 +112,31 @@ export default function Home() {
     error: matchesErrorObj,
     isLoading: loadingMatches,
     mutate: refreshMatches,
-  } = useSWR<BoardResponse>(creds ? ([`/api/soccer/board?date=${date}`, creds] as const) : null, fetcher);
-  const entries = board ? sortEntries(board.entries, sortMode) : null;
+  } = useSWR<BoardResponse>(
+    creds
+      ? ([
+          `/api/soccer/board?date=${date}${
+            leagues.length ? `&competitions=${encodeURIComponent(leagues.join(','))}` : ''
+          }`,
+          creds,
+        ] as const)
+      : null,
+    fetcher
+  );
   const matchesError = matchesErrorObj instanceof Error ? matchesErrorObj.message : null;
+
+  // Counts come from the unfiltered board so each chip always shows how many
+  // matches it would bring back, including chips not currently selected.
+  const leagueCounts: Record<string, number> = {};
+  for (const entry of board?.entries ?? []) {
+    const name = entry.match.competitionName;
+    leagueCounts[name] = (leagueCounts[name] ?? 0) + 1;
+  }
+
+  const visible = (board?.entries ?? []).filter(
+    (e) => leagues.length === 0 || leagues.includes(e.match.competitionName)
+  );
+  const entries = board ? sortEntries(visible, sortMode) : null;
 
   const predUrl = selectedMatch ? predictionUrl(selectedMatch) : null;
   const {
@@ -195,6 +219,15 @@ export default function Home() {
               </div>
             </div>
 
+            {!loadingMatches && !matchesError && board && board.competitions.length > 0 && (
+              <LeagueFilter
+                competitions={board.competitions}
+                selected={leagues}
+                counts={leagueCounts}
+                onChange={setLeagues}
+              />
+            )}
+
             {loadingMatches && (
               <p className="text-white/40 text-sm py-8 text-center">
                 Loading matches and running predictions…
@@ -209,7 +242,11 @@ export default function Home() {
             )}
 
             {!loadingMatches && !matchesError && entries && entries.length === 0 && (
-              <p className="text-white/40 text-sm py-8 text-center">No matches scheduled for this date.</p>
+              <p className="text-white/40 text-sm py-8 text-center">
+                {leagues.length > 0
+                  ? 'No matches in the selected leagues on this date.'
+                  : 'No matches scheduled for this date.'}
+              </p>
             )}
 
             {!loadingMatches && !matchesError && entries && entries.length > 0 && (
