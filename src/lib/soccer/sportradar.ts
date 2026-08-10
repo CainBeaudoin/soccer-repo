@@ -250,6 +250,33 @@ export async function getFormStandings(
   return form;
 }
 
+export interface Competition {
+  id: string;
+  name: string;
+  category: string | null;
+}
+
+/**
+ * Every competition the key can see. Used to work out which Polymarket
+ * leagues this app is actually able to price, rather than assuming.
+ */
+export async function getCompetitions(creds?: SportradarCreds): Promise<Competition[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = await sportradarRequest<any>('/competitions.json', 12 * 60 * 60_000, creds);
+  const list = Array.isArray(raw?.competitions) ? raw.competitions : [];
+
+  const out: Competition[] = [];
+  for (const c of list) {
+    if (!c?.id) continue;
+    out.push({
+      id: String(c.id),
+      name: typeof c.name === 'string' ? c.name : String(c.id),
+      category: typeof c.category?.name === 'string' ? c.category.name : null,
+    });
+  }
+  return out;
+}
+
 export function findStandingForTeam(standings: TeamStanding[], teamId: string): TeamStanding | null {
   return standings.find((s) => s.id === teamId) ?? null;
 }

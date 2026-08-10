@@ -8,6 +8,7 @@ import OddsBar from '@/components/OddsBar';
 import LeagueFilter from '@/components/LeagueFilter';
 import MatchSearch from '@/components/MatchSearch';
 import EdgeBoard from '@/components/EdgeBoard';
+import LeagueCoverage from '@/components/LeagueCoverage';
 import {
   clearCreds,
   credHeaders,
@@ -180,6 +181,8 @@ export default function Home() {
             </button>
           </div>
         )}
+
+        {creds && !selectedMatch && <LeagueCoverage creds={creds} />}
 
         {creds && !selectedMatch && <EdgeBoard creds={creds} date={date} />}
 
