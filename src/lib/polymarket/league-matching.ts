@@ -30,6 +30,10 @@ const AMBIGUOUS = new Set([
 
 /** Polymarket's wording mapped onto Sportradar's, where they differ. */
 const LEAGUE_ALIASES: Record<string, string> = {
+  mls: 'major league soccer',
+  ucl: 'uefa champions league',
+  uel: 'uefa europa league',
+  nwsl: 'national womens soccer league',
   'efl championship': 'championship',
   'efl cup': 'carabao cup',
   'laliga2': 'laliga 2',
@@ -77,10 +81,42 @@ export interface SportradarCompetition {
 }
 
 function tokens(name: string): string[] {
-  return canonical(name).split(' ').filter((t) => t.length > 1);
+  // Digits are kept: they are the tier, and dropping them makes "Ligue 1"
+  // and "Ligue 2" — or "Bundesliga" and "2. Bundesliga" — identical.
+  return canonical(name)
+    .split(' ')
+    .filter((t) => t.length > 1 || /\d/.test(t));
+}
+
+/** The tier number in a league name, e.g. 2 in "Ligue 2" or "2. Bundesliga". */
+function tierOf(name: string): number | null {
+  const found = canonical(name).match(/\b(\d{1,2})\b/);
+  if (found) return Number(found[1]);
+  // "LaLiga2" / "K League 2" style, where the digit is glued to a word.
+  const glued = canonical(name).match(/[a-z](\d)\b/);
+  return glued ? Number(glued[1]) : null;
+}
+
+/** Age-restricted competitions are separate from the senior game. */
+function ageGroupOf(name: string): string | null {
+  const found = canonical(name).match(/\bu\s?(\d{2})\b/);
+  return found ? `u${found[1]}` : null;
 }
 
 function similarity(a: string, b: string): number {
+  // An age-restricted competition never corresponds to a senior one, and
+  // "U19 Bundesliga" otherwise scores as a near-perfect match for
+  // "Bundesliga" on shared tokens alone.
+  if (ageGroupOf(a) !== ageGroupOf(b)) return 0;
+
+  // Differing tiers are different competitions, however similar the words.
+  const tierA = tierOf(a);
+  const tierB = tierOf(b);
+  if (tierA !== null && tierB !== null && tierA !== tierB) return 0;
+  // One side naming a tier and the other not is also a mismatch: "Ligue 1"
+  // must not fall back to a bare "Ligue".
+  if ((tierA === null) !== (tierB === null)) return 0;
+
   const ta = tokens(a);
   const tb = tokens(b);
   if (ta.length === 0 || tb.length === 0) return 0;
@@ -95,6 +131,36 @@ function similarity(a: string, b: string): number {
   const union = new Set([...ta, ...tb]).size;
   // Coverage of the shorter name, tempered by how much the longer one adds.
   return (shared / shorter) * 0.7 + (shared / union) * 0.3;
+}
+
+/**
+ * The reverse direction: given a Sportradar competition, find the
+ * Polymarket league it corresponds to, or null if Polymarket does not list
+ * it. Used to restrict the board to fixtures that are actually tradable,
+ * so nothing is shown that cannot be acted on.
+ *
+ * Ambiguity is resolved permissively here, unlike in resolveLeague. A
+ * competition matching any listed league is kept, because the cost of the
+ * two errors is asymmetric in this direction: wrongly hiding a fixture
+ * removes it from view with no trace, while wrongly keeping one is visible
+ * — the league it matched is shown on the row, so a bad pairing can be
+ * spotted and corrected.
+ */
+export function competitionToPolymarketLeague(
+  competitionName: string,
+  leagues: { name: string }[],
+  threshold = 0.75
+): string | null {
+  let best: { name: string; score: number } | null = null;
+
+  for (const league of leagues) {
+    const score = similarity(competitionName, league.name);
+    if (score >= threshold && (!best || score > best.score)) {
+      best = { name: league.name, score };
+    }
+  }
+
+  return best?.name ?? null;
 }
 
 /**

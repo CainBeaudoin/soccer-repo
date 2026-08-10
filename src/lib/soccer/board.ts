@@ -7,6 +7,8 @@ import {
   type SportradarCreds,
 } from './sportradar';
 import { predictMatch, type PredictionResult } from './predict';
+import { competitionToPolymarketLeague } from '@/lib/polymarket/league-matching';
+import { uniqueLeagues } from '@/lib/polymarket/leagues';
 import type { ScheduleMatch } from './types';
 
 export interface BoardEntry {
@@ -14,6 +16,8 @@ export interface BoardEntry {
   prediction: PredictionResult | null;
   /** Why a prediction is missing, when it is. */
   unavailableReason?: string;
+  /** The Polymarket league this fixture's competition corresponds to. */
+  polymarketLeague?: string;
 }
 
 export interface BoardResponse {
@@ -23,6 +27,8 @@ export interface BoardResponse {
   competitions: string[];
   seasonsResolved: number;
   seasonsSkipped: number;
+  /** Fixtures dropped because Polymarket does not list their competition. */
+  hiddenNotOnPolymarket: number;
 }
 
 /**
@@ -47,8 +53,27 @@ export async function getBoard(
 ): Promise<BoardResponse> {
   const schedule = await getDailySchedule(date, creds);
 
-  const bySeason = new Map<string, ScheduleMatch[]>();
+  // Restrict to competitions Polymarket lists, so every fixture shown is one
+  // that can actually be acted on. Resolving this before fetching standings
+  // also means no rate-limited request is spent on a league that will not
+  // be displayed.
+  const leagues = uniqueLeagues();
+  const leagueByCompetition = new Map<string, string>();
+  const relevant: ScheduleMatch[] = [];
+
   for (const match of schedule.matches) {
+    let league = leagueByCompetition.get(match.competitionName);
+    if (league === undefined) {
+      league = competitionToPolymarketLeague(match.competitionName, leagues) ?? '';
+      leagueByCompetition.set(match.competitionName, league);
+    }
+    if (league) relevant.push(match);
+  }
+
+  const hiddenNotOnPolymarket = schedule.matches.length - relevant.length;
+
+  const bySeason = new Map<string, ScheduleMatch[]>();
+  for (const match of relevant) {
     if (!match.seasonId) continue;
     const list = bySeason.get(match.seasonId);
     if (list) list.push(match);
@@ -109,11 +134,12 @@ export async function getBoard(
     }
   }
 
-  const entries: BoardEntry[] = schedule.matches.map((match) => {
+  const entries: BoardEntry[] = relevant.map((match) => {
     const prediction = predictions.get(match.id) ?? null;
     return {
       match,
       prediction,
+      polymarketLeague: leagueByCompetition.get(match.competitionName) || undefined,
       unavailableReason: prediction
         ? undefined
         : match.seasonId
@@ -122,9 +148,16 @@ export async function getBoard(
     };
   });
 
-  const competitions = [...new Set(schedule.matches.map((m) => m.competitionName))].sort((a, b) =>
+  const competitions = [...new Set(relevant.map((m) => m.competitionName))].sort((a, b) =>
     a.localeCompare(b)
   );
 
-  return { date: schedule.date, entries, competitions, seasonsResolved, seasonsSkipped };
+  return {
+    date: schedule.date,
+    entries,
+    competitions,
+    seasonsResolved,
+    seasonsSkipped,
+    hiddenNotOnPolymarket,
+  };
 }

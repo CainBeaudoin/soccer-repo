@@ -10,6 +10,8 @@
  */
 import { teamSimilarity } from '../normalize';
 import { matchFixtures } from '../matching';
+import { competitionToPolymarketLeague } from '../league-matching';
+import { uniqueLeagues } from '../leagues';
 
 const TEAM_THRESHOLD = 0.6;
 let failures = 0;
@@ -86,6 +88,56 @@ for (const [from, to] of [
 if (matched.some((m) => m.b.id === 's4')) {
   failures++;
   console.error('FAIL  a fixture two weeks away was paired on matching names alone');
+}
+
+// League filter: the board only shows competitions Polymarket lists, so a
+// leak puts an untradable fixture on screen and a miss hides a tradable one.
+const leagues = uniqueLeagues();
+
+function checkLeague(competition: string, shouldBeListed: boolean) {
+  const hit = competitionToPolymarketLeague(competition, leagues);
+  if (Boolean(hit) !== shouldBeListed) {
+    failures++;
+    console.error(
+      `FAIL  competition "${competition}" resolved to ${hit ?? 'nothing'}, expected ${
+        shouldBeListed ? 'a Polymarket league' : 'nothing'
+      }`
+    );
+  }
+}
+
+for (const name of [
+  'Premier League', 'LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1', 'Eredivisie',
+  'MLS', 'Major League Soccer', 'Liga MX', 'J1 League', 'Championship',
+  'DFB-Pokal', 'Copa Libertadores', 'UEFA Champions League', 'NWSL',
+  '2. Bundesliga', 'Ligue 2',
+]) {
+  checkLeague(name, true);
+}
+
+for (const name of [
+  'CONCACAF U-20 Championship', // must not collapse into "EFL Championship"
+  'U19 Bundesliga', // youth, not the senior competition
+  'Regionalliga Nord',
+  'Tercera Division',
+  'Oberliga Hamburg',
+  'Kolkata Premier Division',
+]) {
+  checkLeague(name, false);
+}
+
+// Tier numbers distinguish competitions and must survive normalisation.
+for (const [competition, expected] of [
+  ['Ligue 1', 'Ligue 1'],
+  ['Ligue 2', 'Ligue 2'],
+  ['2. Bundesliga', '2. Bundesliga'],
+  ['Bundesliga', 'Bundesliga'],
+] as const) {
+  const hit = competitionToPolymarketLeague(competition, leagues);
+  if (hit !== expected) {
+    failures++;
+    console.error(`FAIL  "${competition}" resolved to ${hit ?? 'nothing'}, expected "${expected}"`);
+  }
 }
 
 if (failures === 0) {

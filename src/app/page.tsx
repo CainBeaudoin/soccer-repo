@@ -6,7 +6,6 @@ import Button from '@/components/ui/Button';
 import ApiKeyPanel from '@/components/ApiKeyPanel';
 import OddsBar from '@/components/OddsBar';
 import LeagueFilter from '@/components/LeagueFilter';
-import MatchSearch from '@/components/MatchSearch';
 import EdgeBoard from '@/components/EdgeBoard';
 import LeagueCoverage from '@/components/LeagueCoverage';
 import {
@@ -161,7 +160,7 @@ export default function Home() {
         <header className="mb-8 text-center">
           <h1 className="text-3xl font-bold text-white mb-2">Soccer Predictor</h1>
           <p className="text-white/50 text-sm">
-            Pick a match and get a data-driven outcome estimate — home win, draw, or away win.
+            Matches listed on Polymarket, with a data-driven outcome estimate — home win, draw, or away win.
           </p>
           <p className="text-white/30 text-xs mt-1">Informational only — not betting advice.</p>
         </header>
@@ -185,8 +184,6 @@ export default function Home() {
         {creds && !selectedMatch && <LeagueCoverage creds={creds} />}
 
         {creds && !selectedMatch && <EdgeBoard creds={creds} date={date} />}
-
-        {creds && !selectedMatch && <MatchSearch creds={creds} date={date} />}
 
         {creds && !selectedMatch && (
           <div className="bg-[#121a15] border border-white/10 rounded-2xl p-5">
@@ -254,13 +251,15 @@ export default function Home() {
               <p className="text-white/40 text-sm py-8 text-center">
                 {leagues.length > 0
                   ? 'No matches in the selected leagues on this date.'
-                  : 'No matches scheduled for this date.'}
+                  : board && board.hiddenNotOnPolymarket > 0
+                    ? `No Polymarket-listed matches on this date. ${board.hiddenNotOnPolymarket} fixture(s) in other competitions were hidden.`
+                    : 'No matches scheduled for this date.'}
               </p>
             )}
 
             {!loadingMatches && !matchesError && entries && entries.length > 0 && (
               <div className="space-y-2">
-                {entries.map(({ match, prediction, unavailableReason }) => {
+                {entries.map(({ match, prediction, unavailableReason, polymarketLeague }) => {
                   const meta = statusMeta(match.status);
                   const edge = edgeOf(prediction);
                   return (
@@ -275,6 +274,14 @@ export default function Home() {
                           {meta.label}
                         </span>
                         <span className="text-white/30 text-xs truncate">{match.competitionName}</span>
+                        {polymarketLeague && polymarketLeague !== match.competitionName && (
+                          <span
+                            className="text-[#3fae5f]/50 text-[10px] truncate"
+                            title={`Matched to Polymarket league "${polymarketLeague}"`}
+                          >
+                            → {polymarketLeague}
+                          </span>
+                        )}
                         <span className="text-white/30 text-xs ml-auto whitespace-nowrap">
                           {formatKickoff(match.scheduled)}
                         </span>
@@ -308,11 +315,20 @@ export default function Home() {
               </div>
             )}
 
-            {!loadingMatches && !matchesError && board && board.seasonsSkipped > 0 && (
-              <p className="text-white/25 text-xs mt-3 text-center">
-                {board.seasonsSkipped} competition(s) not priced — standings unavailable or the per-request
-                limit was reached. Sort by kick-off to see them in schedule order.
-              </p>
+            {!loadingMatches && !matchesError && board && (
+              <div className="mt-3 text-center space-y-1">
+                {board.hiddenNotOnPolymarket > 0 && (
+                  <p className="text-white/25 text-xs">
+                    {board.hiddenNotOnPolymarket} fixture(s) hidden — their competition is not on Polymarket.
+                  </p>
+                )}
+                {board.seasonsSkipped > 0 && (
+                  <p className="text-white/25 text-xs">
+                    {board.seasonsSkipped} competition(s) not priced — standings unavailable or the
+                    per-request limit was reached.
+                  </p>
+                )}
+              </div>
             )}
           </div>
         )}
