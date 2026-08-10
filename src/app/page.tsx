@@ -7,6 +7,7 @@ import ApiKeyPanel from '@/components/ApiKeyPanel';
 import OddsBar from '@/components/OddsBar';
 import LeagueFilter from '@/components/LeagueFilter';
 import MatchSearch from '@/components/MatchSearch';
+import EdgeBoard from '@/components/EdgeBoard';
 import {
   clearCreds,
   credHeaders,
@@ -179,6 +180,8 @@ export default function Home() {
             </button>
           </div>
         )}
+
+        {creds && !selectedMatch && <EdgeBoard creds={creds} date={date} />}
 
         {creds && !selectedMatch && <MatchSearch creds={creds} date={date} />}
 

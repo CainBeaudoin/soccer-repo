@@ -78,6 +78,28 @@ Note that the Odds Comparison family is documented under **v1** (`/odds/v1/` on 
 
 > **Verification status:** the soccer feeds' request/response handling has been exercised directly. The Odds Comparison endpoint paths follow Sportradar's documented conventions but have **not** been run against the live API from this codebase — they are collected in one block at the top of `src/lib/odds/client.ts`, and both the base segment and version are overridable. The probe above exists precisely because those paths are unverified.
 
+## Polymarket cross-reference
+
+`GET /api/edge?date=YYYY-MM-DD` pairs Polymarket's upcoming soccer games with the fixtures this app can price, and shows the model's probability beside Polymarket's, sorted by where the two disagree most. Polymarket's Gamma API is public, so no additional key is needed.
+
+The difficult part is that the two sources name the same club differently — "Spurs" against "Tottenham Hotspur FC", "FC Bayern München" against "Bayern Munich" — while also naming *different* clubs almost identically. Matching is deliberately biased towards refusing: a missed pairing costs a row on screen, but a wrong pairing attaches a prediction to the wrong fixture.
+
+Three rules do the work:
+
+1. **Legal affixes are dropped; discriminators are not.** `FC`, `CF`, `AFC`, `SC` carry no identity. `City`, `United`, `Real`, `Wednesday` do — dropping those collapses Manchester City into Manchester United.
+2. **The leftover test.** After removing shared tokens, if *both* names still carry tokens of their own, they are different clubs (`Manchester [City]` vs `Manchester [United]`). If only *one* side has leftovers, the shorter is an abbreviation of the longer (`Brighton` vs `Brighton [Hove Albion]`).
+3. **Both teams and the kick-off must agree.** This resolves what names alone cannot: `Los Angeles FC` is a strict subset of `Los Angeles Galaxy`, and only the opponent separates them. It also stops the same two clubs meeting later in the season from being paired with today's market.
+
+Each pairing carries a confidence (`high` / `medium` / `low`) and its score, so a borderline pairing is visible as borderline rather than presented as certain. Unpaired Polymarket games are listed rather than hidden.
+
+The matching rules are covered by checks, including the near-miss cases that must *not* pair:
+
+```bash
+npm run test:matching
+```
+
+> **Verification status:** the matching logic is exercised directly by those checks. The Polymarket Gamma API request/response handling follows the documented public API but has **not** been run against the live host from this codebase, so field names there are the first thing to check if the cross-reference comes back empty while the board is populated.
+
 ## Project structure
 
 - `src/lib/soccer/sportradar.ts` — server-only Sportradar client + response normalization.
