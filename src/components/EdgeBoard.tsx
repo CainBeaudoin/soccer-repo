@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import { credHeaders, type StoredCreds } from '@/lib/soccer/credential-storage';
 import type { EdgeReport } from '@/lib/polymarket/edge';
@@ -18,21 +19,31 @@ const CONFIDENCE_STYLE: Record<string, string> = {
 };
 
 export default function EdgeBoard({ creds, date }: { creds: StoredCreds | null; date: string }) {
+  // Opt-in rather than automatic: this report re-reads the schedule and every
+  // league table, so firing it on page load alongside the board doubled the
+  // API traffic for a panel the viewer had not asked for.
+  const [open, setOpen] = useState(false);
+
   const { data, error, isLoading } = useSWR<EdgeReport>(
-    creds ? ([`/api/edge?date=${date}`, creds] as const) : null,
+    creds && open ? ([`/api/edge?date=${date}`, creds] as const) : null,
     fetcher
   );
   const errMsg = error instanceof Error ? error.message : null;
 
   return (
     <div className="bg-[#121a15] border border-white/10 rounded-2xl p-5 mb-4">
-      <div className="mb-4">
-        <h2 className="text-white font-bold text-lg">Polymarket cross-reference</h2>
-        <p className="text-white/40 text-xs mt-0.5">
-          Games listed on Polymarket that this app can also price, sorted by where the model disagrees
-          most with the market.
-        </p>
-      </div>
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between text-left">
+        <div>
+          <h2 className="text-white font-bold text-lg">Polymarket cross-reference</h2>
+          <p className="text-white/40 text-xs mt-0.5">
+            Model probabilities beside Polymarket&apos;s, sorted by where they disagree most.
+          </p>
+        </div>
+        <span className="text-white/40 text-sm">{open ? 'Hide' : 'Show'}</span>
+      </button>
+
+      {open && (
+        <div className="mt-4">
 
       {isLoading && (
         <p className="text-white/40 text-sm py-8 text-center">
@@ -147,7 +158,9 @@ export default function EdgeBoard({ creds, date }: { creds: StoredCreds | null; 
               </ul>
             </details>
           )}
-        </>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

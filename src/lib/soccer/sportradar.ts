@@ -1,4 +1,5 @@
 import 'server-only';
+import { limitedFetch } from './rate-limiter';
 import type { CompetitorRef, ScheduleMatch, ScheduleResponse, TeamStanding } from './types';
 
 // Read env at request time, not module load. Module-level reads are
@@ -48,9 +49,16 @@ export class SportradarError extends Error {
   }
 }
 
-// Sportradar trial keys are rate-limited to ~1 request/second. A tiny
-// in-process cache keeps repeated page loads / multiple users from
-// tripping that limit — it is not a substitute for real caching at scale.
+/**
+ * Cache lifetimes, chosen against how fast the data actually changes rather
+ * than how fresh it would be nice to look. A league table moves when
+ * matches finish, not continuously, so re-fetching it every few minutes
+ * spends the trial key's ~1 request/second budget for no new information.
+ * Overridable for a production key with a larger allowance.
+ */
+const SCHEDULE_TTL = Number(process.env.SPORTRADAR_SCHEDULE_TTL_MS || 10 * 60_000);
+const STANDINGS_TTL = Number(process.env.SPORTRADAR_STANDINGS_TTL_MS || 60 * 60_000);
+
 type CacheEntry = { expires: number; value: unknown };
 const responseCache = new Map<string, CacheEntry>();
 
@@ -83,7 +91,11 @@ async function sportradarRequest<T>(path: string, ttlMs: number, creds?: Sportra
   const separator = path.includes('?') ? '&' : '?';
   const url = `${baseUrl}${path}${separator}api_key=${encodeURIComponent(apiKey)}`;
 
-  const res = await fetch(url, { cache: 'no-store' });
+  // Paced and de-duplicated globally: the board and the cross-reference ask
+  // for the same standings, and without this they raced each other into the
+  // rate limit. The cache key doubles as the de-duplication key since it
+  // already distinguishes credentials.
+  const res = await limitedFetch(cacheKey, url);
 
   if (!res.ok) {
     if (res.status === 429) {
@@ -153,7 +165,7 @@ function normalizeMatch(raw: any): ScheduleMatch | null {
 
 export async function getDailySchedule(date: string, creds?: SportradarCreds): Promise<ScheduleResponse> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = await sportradarRequest<any>(`/schedules/${date}/schedules.json`, 60_000, creds);
+  const raw = await sportradarRequest<any>(`/schedules/${date}/schedules.json`, SCHEDULE_TTL, creds);
   const rawMatches = Array.isArray(raw?.schedules) ? raw.schedules : [];
 
   const matches = rawMatches
@@ -208,7 +220,7 @@ export async function getStandings(seasonId: string, creds?: SportradarCreds): P
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = await sportradarRequest<any>(
     `/seasons/${encodeURIComponent(seasonId)}/standings.json`,
-    5 * 60_000,
+    STANDINGS_TTL,
     creds
   );
   const rows = collectStandingRows(raw);
@@ -230,7 +242,7 @@ export async function getFormStandings(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const raw = await sportradarRequest<any>(
       `/seasons/${encodeURIComponent(seasonId)}/form_standings.json`,
-      5 * 60_000,
+      STANDINGS_TTL,
       creds
     );
     const rows = collectStandingRows(raw);
